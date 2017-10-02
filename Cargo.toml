@@ -1,6 +1,7 @@
 [package]
 name = "kr"
 version = "0.1.0"
-authors = ["Paul Russo <paul@jstar.ai>"]
+authors = ["Paul Russo <paul@paulrusso.me>"]
 
 [dependencies]
+terminal_size = "0.1.7"
