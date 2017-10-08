@@ -2,71 +2,87 @@
 
 extern crate terminal_size;
 
+use std::io;
 use std::fs;
+use std::ffi;
 use std::env;
+use std::cmp;
 use std::os::unix::fs::PermissionsExt;
 
 use terminal_size::{Width, Height, terminal_size};
 
+// Helpers
 fn char_at(pos: usize) -> impl Fn(&String) -> String {
     move |some_string| some_string.chars().nth(pos).unwrap().to_string()
 }
 
-fn add_path_string(base: &String, addition: &String) -> String {
-    format!("{}        {}", base, addition)
+fn pad_right(base: String, padded_length: usize) -> String {
+    let gap = padded_length - base.len();
+    let pad = std::iter::repeat(" ").take(gap).collect::<String>();
+    format!("{}{}", base, pad)
 }
 
-fn print_lines(lines: Vec<String>) {
-    for line in lines {
-        println!("{}", line);
+fn string_from_file_name(file_name: ffi::OsString) -> String {
+    match file_name.into_string() {
+        Ok(path) => path,
+        Err(_) => String::new(),
     }
 }
 
-fn display_list(path_list: fs::ReadDir, show_all: bool, show_metadata: bool, compact: bool) {
+// End helpers
+
+fn print_lines(lines: Vec<Vec<String>>, col_length: usize) {
+    for line in lines {
+        let formatted_line: String = line.into_iter().fold(String::new(), |l, w| {
+            format!("{}{}", l, pad_right(w, col_length))
+        });
+
+        println!("{}", formatted_line);
+    }
+}
+
+fn display_list(path_list: fs::ReadDir, show_all: bool, long: bool) {
+    let path_vec: Vec<io::Result<fs::DirEntry>> = path_list.collect();
+
+    // Get vector of tuples, each of which will contain a stringified pathname, and an fs::Metadata struct
+    let dirs: Vec<(String, fs::Metadata)> = path_vec.into_iter().filter_map(|path| {
+        match path {
+            Ok(dir) => Some((string_from_file_name(dir.file_name()), dir.metadata().unwrap())),
+            Err(_) => None,
+        }
+    }).collect();
+
+    let filtered_dirs: Vec<(String, fs::Metadata)> = match show_all {
+        true => dirs.clone(),
+        false => dirs.into_iter().filter(|dir| char_at(0)(&dir.0) != ".").collect()
+    };
+
+    // Calculate the column length, by getting the maximum path length and adding 1 (a space) to it
+    let col_length: usize = filtered_dirs.iter().fold(0, |max, dir| cmp::max(dir.0.len(), max)) + 1;
+
     // Get terminal width
     let terminal_width = match terminal_size() {
         None => 100,
         Some((Width(w), Height(_))) => w,
     };
 
-    let mut lines = vec![String::new()];
+    let cols_per_row = cmp::max((terminal_width as usize) / col_length, 1);
 
-    for path in path_list {
-        let the_path = path.unwrap();
-        let metadata = the_path.metadata().unwrap();
+    let mut lines = vec![vec![]];
 
-        let path_string = match the_path.file_name().into_string() {
-            Ok(bare_path) => bare_path,
-            Err(_) => String::new(),
-        };
+    for dir in filtered_dirs {
+        let path_string = dir.0;
 
-        let is_hidden = char_at(0)(&path_string) == ".";
+        let last_line_index = lines.len() - 1;
 
-        // If we're showing hidden paths, or if the path is not hidden...
-        if show_all || !is_hidden {
-            let lines_length = lines.len();
-
-            // If the current line has no length...
-            if lines[lines_length - 1].len() == 0 {
-                // Set the current line equal to the path string
-                lines[lines_length - 1] = path_string;
-            } else {
-                if compact {
-                    // If we're trying to display the paths on as few lines as possible
-                    if (path_string.len() + 8 + lines[lines_length - 1].len()) > (terminal_width as usize) {
-                        lines.push(path_string);
-                    } else {
-                        lines[lines_length - 1] = add_path_string(&lines[lines_length - 1], &path_string);
-                    }
-                } else {
-                    // Otherwise, put each path on its own line
-                    lines.push(path_string);
-                }
-            }
+        if lines[last_line_index].len() < cols_per_row {
+            lines[last_line_index].push(path_string);
+        } else {
+            lines.push(vec![path_string]);
         }
     }
 
-    print_lines(lines);
+    print_lines(lines, col_length);
 }
 
 fn main() {
@@ -79,21 +95,13 @@ fn main() {
         Some(arg_path) => arg_path.trim().to_string(),
     };
 
-    let show_all = match flags.iter().find(|flag| flag == &"-a") {
-        None => false,
-        Some(_) => true,
-    };
+    let show_all = flags.iter().any(|flag| flag == &"-a");
 
-    let show_metadata = match flags.iter().find(|flag| flag == &"-l") {
-        None => false,
-        Some(_) => true,
-    };
-
-    let compact = !show_metadata;
+    let long = flags.iter().any(|flag| flag == &"-l");
 
     // Get a list of paths from the listing path
     match fs::read_dir(listing_path) {
-        Ok(listing_result) => display_list(listing_result, show_all, show_metadata, compact),
+        Ok(listing_result) => display_list(listing_result, show_all, long),
         Err(err) => println!("Error: {}", err),
     }
 }
